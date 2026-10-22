@@ -1,0 +1,807 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ねこダッシュ！</title>
+<style>
+  :root { --bg:#fdf6e9; --ink:#4a3b2a; --accent:#ff8a3d; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; background: var(--bg); color: var(--ink);
+    font-family: "Hiragino Maru Gothic ProN","BIZ UDPGothic","Meiryo","Noto Sans JP","Noto Sans CJK JP",sans-serif;
+    display: flex; flex-direction: column; align-items: center; padding: 12px;
+  }
+  header {
+    width: 100%; max-width: 900px; display: flex; flex-wrap: wrap; gap: 10px;
+    align-items: center; justify-content: space-between; margin-bottom: 10px;
+  }
+  h1 { font-size: 22px; margin: 0; }
+  .conn { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  button {
+    font: inherit; font-weight: bold; padding: 8px 16px; border-radius: 999px;
+    border: 2px solid var(--accent); background: #fff; color: var(--accent); cursor: pointer;
+  }
+  button:hover { background: var(--accent); color: #fff; }
+  #status { font-size: 14px; padding: 5px 12px; border-radius: 999px; background: #e9e4d8; }
+  #status.on { background: #c9f0c0; }
+  .stage { width: 100%; max-width: 900px; }
+  canvas {
+    width: 100%; height: auto; aspect-ratio: 800 / 320; display: block;
+    border-radius: 16px; box-shadow: 0 4px 14px rgba(0,0,0,.2); background: #bfe9ff;
+    touch-action: manipulation; cursor: pointer; user-select: none; -webkit-user-select: none;
+  }
+  .help { width: 100%; max-width: 900px; font-size: 14px; line-height: 1.8; margin-top: 12px; }
+  .help b { color: var(--accent); }
+  .help code { background: #efe6d2; padding: 1px 6px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>ねこダッシュ！</h1>
+  <div class="conn">
+    <span id="status">Arduino未接続：スペースキー／クリック・タップでジャンプ</span>
+    <button id="btnConn" type="button">Arduino接続</button>
+    <button id="btnTest" type="button" style="display:none">動作テスト</button>
+  </div>
+</header>
+
+<div class="stage"><canvas id="game" aria-label="ねこダッシュのゲーム画面"></canvas></div>
+
+<div class="help">
+  <b>あそびかた：</b>走ってくる恐竜をジャンプでよけよう。ぶつかるとゲームオーバー。よけるほど点数が上がり、だんだん速くなります。<br>
+  <b>操作：</b>Arduino接続中はタクトスイッチでジャンプ。未接続のときはスペースキー・画面のクリック／タップでジャンプします。スタートとリスタートはどちらでもできます。<br>
+  <b>Arduinoとつなぐには：</b>USBで接続し、「Arduino接続」ボタンを押してポートを選んでください（Chrome／Edge）。一度許可すると、次回からは自動でつながります。<br>
+  <b>ステージ：</b>70点からラッシュタイム、100点で夜になってネコが小さくなり2段ジャンプが解禁、140点で朝に戻り、150点でボス恐竜が登場します。<br>
+  <b>先生用（練習モード）：</b>URLの末尾に <code>?start=110</code>（その点数から、2段ジャンプ解禁の状態で開始）、<code>?boss=100</code>（ボスが出る点数）、<code>?unlock=70</code>（2段ジャンプを解禁する点数）を付けられます。<code>&amp;</code>でつなげて指定できます。練習モードではハイスコアは記録されません。
+</div>
+
+<script>
+(() => {
+'use strict';
+
+/* ---------- 定数 ---------- */
+const W = 800, H = 320, GROUND = 250, CAT_X = 130;
+const FONT = '"Hiragino Maru Gothic ProN","BIZ UDPGothic","Meiryo","Noto Sans JP","Noto Sans CJK JP",sans-serif';
+const TAU = Math.PI * 2;
+const JUMP_V = 730, GRAVITY = 2200;     // ジャンプ初速・重力（px/s, px/s^2）
+const KEY_HIGH = 'nekoDash.highScore';
+
+/* ---------- URLパラメータ（先生用の練習モード） ----------
+   ?start=110  その点数から、2段ジャンプ解禁の状態で開始
+   ?boss=100   ボスが出る点数（通常は150）
+   ?unlock=70  2段ジャンプを解禁する点数（通常は100）
+   &でつなげられる。どれかを指定すると「練習モード」になり、ハイスコアは記録されない */
+const params = new URLSearchParams(location.search);
+function numParam(k) {
+  if (!params.has(k)) return null;
+  const v = parseInt(params.get(k), 10);
+  return Number.isFinite(v) && v >= 0 ? Math.min(v, 9999) : null;
+}
+const P_START = numParam('start'), P_BOSS = numParam('boss'), P_UNLOCK = numParam('unlock');
+const PRACTICE = P_START !== null || P_BOSS !== null || P_UNLOCK !== null;
+const START_SCORE = P_START !== null ? P_START : 0;
+const BOSS_AT = P_BOSS !== null ? P_BOSS : 150;
+const UNLOCK_AT = P_UNLOCK !== null ? P_UNLOCK : (P_START !== null ? Math.min(100, P_START) : 100);
+const RUSH_FROM = 70, NIGHT_FROM = 100, NIGHT_TO = 140;   // ラッシュ・夜（ミニねこ）の範囲
+const BOSS_HP = 15, BOSS_BONUS = 30, BOSS_X = 800 - 70;   // ボスの位置（画面右がわ）
+const DINO_PAL = { G: '#5bc96c', GD: '#34964a', BELLY: '#dcf7ae', ORG: '#ff9f43', ORGD: '#d97a1a', LINE: '#25693a' };
+const BOSS_PAL = { G: '#b57be0', GD: '#7a3fa8', BELLY: '#f1ddff', ORG: '#ffd447', ORGD: '#d19a00', LINE: '#4b2270' };
+
+const cv = document.getElementById('game');
+const ctx = cv.getContext('2d');
+cv.width = W * 2; cv.height = H * 2; ctx.scale(2, 2);
+
+const statusEl = document.getElementById('status');
+const btnConn = document.getElementById('btnConn');
+const btnTest = document.getElementById('btnTest');
+
+const mod = (a, n) => ((a % n) + n) % n;
+function mixHex(a, b, k) {                      // 2色（#rrggbb）をk(0〜1)で混ぜる
+  const pa = parseInt(a.slice(1), 16), pb = parseInt(b.slice(1), 16);
+  const ch = sh => Math.round(((pa >> sh) & 255) * (1 - k) + ((pb >> sh) & 255) * k);
+  return `rgb(${ch(16)},${ch(8)},${ch(0)})`;
+}
+const stars = Array.from({ length: 36 }, (_, i) => ({ x: (i * 97) % 800, y: 12 + (i * 53) % 130, r: 1 + (i % 3) * 0.6, ph: i }));
+const circ = (x, y, r) => { ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.fill(); };
+const ell = (x, y, rx, ry, rot = 0) => { ctx.beginPath(); ctx.ellipse(x, y, rx, ry, rot, 0, TAU); ctx.fill(); };
+const ellS = (x, y, rx, ry, rot = 0) => { ctx.beginPath(); ctx.ellipse(x, y, rx, ry, rot, 0, TAU); ctx.fill(); ctx.stroke(); };
+function rr(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+}
+
+/* ---------- ハイスコア（ブラウザに保存） ---------- */
+function loadHigh() { try { return parseInt(localStorage.getItem(KEY_HIGH), 10) || 0; } catch (e) { return 0; } }
+function saveHigh(v) { try { localStorage.setItem(KEY_HIGH, String(v)); } catch (e) {} }
+
+/* ---------- ゲーム状態 ---------- */
+let state = 'ready';               // ready | playing | over
+let score = START_SCORE, high = loadHigh(), newHigh = false;
+let scroll = 0, t = 0, shake = 0, overAt = 0;
+let cat = { y: 0, vy: 0, onGround: true, phase: 0, jumps: 0, spin: 0 };   // y = 地面からの高さ
+let dinos = [], spawnTimer = 0, floaters = [], banners = [];
+let rush = { left: 0, cool: 3 };
+let boss = newBoss();
+let curSpeed = 200;
+let nightT = isNight() ? 1 : 0, catScale = isNight() ? 0.6 : 1;
+const clouds = [{x:80,y:50,s:1},{x:300,y:92,s:.7},{x:520,y:38,s:1.2},{x:720,y:100,s:.8},{x:930,y:60,s:1}];
+
+function newBoss() { return { active: false, done: false, enter: 0, x: W + 320, hp: BOSS_HP, attack: 0, mouth: false, hurt: 0, out: 0, phase: 0 }; }
+function level() { return Math.floor(score / 5) + 1; }
+function canDouble() { return score >= UNLOCK_AT; }                 // 2段ジャンプが使えるか
+function isNight() { return score >= NIGHT_FROM && score < NIGHT_TO; } // 夜＝ミニねこタイム
+function playSpeed() {                         // 点数が上がるほど速く（上限は約1200px/s）
+  const base = 300 + Math.min(score, 22) * 22;  // 22点で約784px/s
+  const extra = Math.max(0, score - 22) * 8;    // それ以降もゆっくり加速
+  return Math.min(1200, base + extra);
+}
+function targetSpeed() {
+  if (state === 'ready') return 200;
+  if (state === 'over') return 0;
+  return boss.active ? Math.min(700, playSpeed()) : playSpeed();   // ボス戦は少しゆっくり
+}
+
+/* ---------- 画面中央のお知らせ ---------- */
+function pushBanner(text, color, life = 1.5, front = false, sub = '') {
+  const b = { text, color, life, sub };
+  if (front) banners.unshift(b); else banners.push(b);
+}
+function onScoreChange(prev) {                 // 点数が変わったときの節目の演出
+  if (prev < RUSH_FROM && score >= RUSH_FROM) pushBanner(`${RUSH_FROM}点！ ここからきびしくなるよ`, '#e0483a', 1.6, true);
+  if (prev < NIGHT_FROM && score >= NIGHT_FROM) pushBanner('夜になった！ ミニねこタイム', '#3b4cc0', 1.8, true);
+  if (prev < NIGHT_TO && score >= NIGHT_TO) pushBanner('朝になった！ ネコがもとの大きさに', '#e08a00', 1.8, true);
+  if (prev < UNLOCK_AT && score >= UNLOCK_AT)
+    pushBanner('2段ジャンプ解禁！', '#2f9e44', 2.8, true, 'スイッチをもう一度押すと、空中でもう一回ジャンプ！');
+  if (Math.floor(score / 5) !== Math.floor(prev / 5) && banners.length === 0)
+    pushBanner(`${score < 75 ? 'スピードアップ' : 'レベルアップ'}！ Lv ${level()}`, '#e0483a', 1.2);
+}
+
+function resetGame() {
+  score = START_SCORE; newHigh = false; shake = 0;
+  cat = { y: 0, vy: 0, onGround: true, phase: 0, jumps: 0, spin: 0 };
+  dinos = []; floaters = []; banners = []; spawnTimer = 1.4;
+  rush = { left: 0, cool: 3 }; boss = newBoss();
+  nightT = isNight() ? 1 : 0; catScale = isNight() ? 0.6 : 1;
+  curSpeed = playSpeed();
+  if (canDouble()) pushBanner('2段ジャンプ解禁！', '#2f9e44', 2.8, true, 'スイッチをもう一度押すと、空中でもう一回ジャンプ！');
+}
+
+function startGame() { resetGame(); state = 'playing'; }
+
+function jump() {
+  if (state !== 'playing') return;
+  if (cat.onGround) {
+    cat.vy = JUMP_V; cat.onGround = false; cat.jumps = 1;
+    send('L');                                 // LED点滅
+  } else if (canDouble() && cat.jumps < 2) {   // 2段ジャンプ
+    cat.vy = JUMP_V * 0.9; cat.jumps = 2; cat.spin = 0.001;
+    floaters.push({ ring: true, x: CAT_X, y: GROUND - cat.y - 14 * catScale, life: 0.4, max: 0.4 });
+    send('L');
+  }
+}
+
+function gameOver() {
+  state = 'over'; overAt = performance.now(); shake = 0.4;
+  if (!PRACTICE && score > high) { high = score; newHigh = true; saveHigh(high); }   // 練習モードは記録しない
+  send('G');                                   // ゲームオーバー音＋LED
+}
+
+/* ---------- 恐竜の出現 ---------- */
+const MIX = [[0.8, 1.25], [1.25, 0.8], [0.8, 1, 1.25]];     // 大小まぜパターン
+function spawnDino() {
+  const x0 = W + 70;
+  const r = Math.random();
+  const mixP = score >= RUSH_FROM ? 0.25 : 0;                                  // 大小まぜ（70点〜）
+  const pairP = score >= 6 ? Math.min(0.35, 0.1 + (score - 6) * 0.02) : 0;     // 2匹連続
+  const tripleP = score >= 20 ? Math.min(0.25, (score - 18) * 0.01) : 0;       // 3匹連続
+  let sizes = [1], spacing = 95;
+  if (r < mixP) { sizes = MIX[Math.floor(Math.random() * MIX.length)]; spacing = 100; }
+  else if (r < mixP + tripleP) { sizes = [1, 1, 1]; spacing = 90; }
+  else if (r < mixP + tripleP + pairP) { sizes = [1, 1]; spacing = 95; }
+  else {
+    const q = Math.random();
+    if (score >= 8 && q < Math.min(0.3, (score - 6) * 0.02)) sizes = [1.25];   // 大きい恐竜
+    else if (q > 0.8) sizes = [0.8];                                           // 小さい恐竜
+  }
+  sizes.forEach((sz, i) => dinos.push({ x: x0 + i * spacing, s: sz, phase: Math.random() * 6, passed: false }));
+  spawnTimer += ((sizes.length - 1) * spacing) / Math.max(curSpeed, 300);
+}
+
+// 次の恐竜が出るまでの時間（秒）：すぐ次が来る／ふつう／ひと息つける、をランダムに混ぜる
+function nextGap() {
+  if (rush.left > 0) return 0.85 + Math.random() * 0.15;     // ラッシュタイム中は連続で出る
+  const k = Math.max(0, 1 - score / 40);          // 序盤1 → 40点で0
+  const quickP = Math.min(0.4, score * 0.03);     // 「すぐ次が来る」確率は点数とともに増える
+  const r = Math.random();
+  if (r < quickP) return 0.82 + 0.3 * k * Math.random();
+  if (r < quickP + 0.25) return 1.8 + k * (0.5 + Math.random() * 0.5);
+  return 1.05 + 0.35 * k + Math.random() * (0.35 + 1.0 * k);
+}
+
+/* ---------- ボス戦 ---------- */
+function startBoss() {
+  boss.active = true; boss.enter = 1.6; boss.x = W + 320; boss.hp = BOSS_HP;
+  boss.attack = 0; boss.mouth = false;
+  rush.left = 0; rush.cool = 6;
+  shake = 0.5;
+  pushBanner('ボス恐竜があらわれた！', '#8e3fb8', 2.4, true, `${BOSS_HP}回よけてたおそう！`);
+}
+
+function bossSpawn() {                         // ボスが小さな恐竜を放つ（HPが減るほど激しく）
+  const x0 = BOSS_X - 95, spacing = 100;
+  const f = boss.hp / BOSS_HP, r = Math.random();
+  let sizes;
+  if (f > 0.66) sizes = [r < 0.3 ? 0.8 : 1];
+  else if (f > 0.33) sizes = r < 0.5 ? [1] : r < 0.8 ? [1, 1] : [0.8, 1.25];
+  else sizes = r < 0.25 ? [1] : r < 0.45 ? [1, 1] : r < 0.65 ? [1.25, 0.8] : r < 0.85 ? [1, 1, 1] : [0.8, 1, 1.25];
+  sizes.forEach((sz, i) => dinos.push({ x: x0 + i * spacing, s: sz, phase: Math.random() * 6, passed: false }));
+  return ((sizes.length - 1) * spacing) / Math.max(curSpeed, 300);
+}
+
+function updateBoss(dt) {
+  boss.phase += dt * 8;
+  if (boss.hurt > 0) boss.hurt -= dt;
+  if (boss.enter > 0) {                        // 画面右から登場
+    boss.enter -= dt;
+    const k = 1 - Math.max(0, boss.enter) / 1.6;
+    boss.x = (W + 320) + (BOSS_X - (W + 320)) * (1 - Math.pow(1 - k, 3));
+    if (boss.enter <= 0) { shake = 0.3; boss.attack = 1.2; }
+    return;
+  }
+  boss.attack -= dt;
+  boss.mouth = boss.attack < 0.45;             // 口を開けたら攻撃の合図
+  if (boss.attack <= 0) {
+    const extra = bossSpawn();
+    const f = boss.hp / BOSS_HP;
+    const gap = f > 0.66 ? 1.5 + Math.random() * 0.6 : f > 0.33 ? 1.15 + Math.random() * 0.5 : 0.9 + Math.random() * 0.4;
+    boss.attack = gap + extra;
+  }
+}
+
+function hitBoss() {                           // 恐竜を1匹よけるたびにボスのHPが減る
+  if (boss.enter > 0 || boss.out > 0) return;
+  boss.hp--; boss.hurt = 0.25;
+  if (boss.hp <= 0) defeatBoss();
+}
+
+function defeatBoss() {
+  boss.active = false; boss.done = true; boss.out = 1.8; boss.mouth = false;
+  dinos.length = 0;                            // 小さな恐竜はいっせいに消える
+  const prev = score; score += BOSS_BONUS; onScoreChange(prev);
+  pushBanner('ボスをたおした！', '#e6a100', 2.2, true, `ボーナス +${BOSS_BONUS}点`);
+  spawnTimer = 2.0; rush.left = 0; rush.cool = 8;
+  send('S');
+}
+
+/* ---------- 入力（スイッチ／キーボード／タップ） ---------- */
+function onInput(source) {                     // source: 'switch' | 'other'
+  if (state === 'playing') {
+    if ((source === 'switch' && connected) || (source === 'other' && !connected)) jump();
+  } else if (state === 'ready') {
+    startGame();
+  } else if (state === 'over') {
+    if (performance.now() - overAt > 700) startGame();
+  }
+}
+window.addEventListener('keydown', e => {
+  if (e.code === 'Space' || e.code === 'ArrowUp') {
+    e.preventDefault();
+    if (!e.repeat) onInput('other');
+  }
+});
+window.addEventListener('keyup', e => { if (e.code === 'Space') e.preventDefault(); });
+cv.addEventListener('pointerdown', e => { e.preventDefault(); onInput('other'); });
+
+/* ---------- 更新 ---------- */
+function update(dt) {
+  t += dt;
+  if (shake > 0) shake -= dt;
+
+  // 速さ・昼夜・ネコの大きさはなめらかに切り替える
+  if (state === 'playing') curSpeed += (targetSpeed() - curSpeed) * Math.min(1, dt * 2.5);
+  else curSpeed = targetSpeed();
+  const sp = curSpeed;
+  scroll += sp * dt;
+  nightT += ((isNight() ? 1 : 0) - nightT) * Math.min(1, dt * 1.5);
+  catScale += ((isNight() ? 0.6 : 1) - catScale) * Math.min(1, dt * 6);
+
+  if (state === 'ready') cat.phase += dt * 12;
+
+  if (state === 'playing') {
+    if (cat.spin > 0) { cat.spin += dt / 0.45; if (cat.spin >= 1) cat.spin = 0; }
+    if (!cat.onGround) {
+      cat.vy -= GRAVITY * dt; cat.y += cat.vy * dt;
+      if (cat.y <= 0) { cat.y = 0; cat.vy = 0; cat.onGround = true; cat.jumps = 0; cat.spin = 0; }
+    } else cat.phase += dt * 14;
+
+    if (!boss.active && !boss.done && score >= BOSS_AT) startBoss();
+
+    if (boss.active) {
+      updateBoss(dt);
+    } else {
+      if (score >= RUSH_FROM) {                // ラッシュタイム（連続で出てくる時間）
+        if (rush.left > 0) {
+          rush.left -= dt;
+          if (rush.left <= 0) { rush.cool = 5 + Math.random() * 4; spawnTimer += 1.0; }
+        } else {
+          rush.cool -= dt;
+          if (rush.cool <= 0) {
+            rush.left = 3.5 + Math.random() * 1.5; spawnTimer = Math.min(spawnTimer, 0.9);
+            pushBanner('ラッシュタイム！', '#e0483a', 1.3, true);
+          }
+        }
+      }
+      spawnTimer -= dt;
+      if (spawnTimer <= 0) {
+        spawnDino();
+        spawnTimer += nextGap();
+      }
+    }
+
+    const cs = catScale;
+    const cb = { l: CAT_X - 16 * cs, r: CAT_X + 16 * cs, t: GROUND - cat.y - 50 * cs, b: GROUND - cat.y - 3 * cs };
+    for (const d of dinos) {
+      d.x -= sp * dt; d.phase += dt * 12;
+      const hw = 26 * d.s, hh = 52 * d.s;
+      const db = { l: d.x - hw, r: d.x + hw, t: GROUND - hh, b: GROUND - 2 };
+      if (cb.r > db.l && cb.l < db.r && cb.b > db.t && cb.t < db.b) { gameOver(); break; }
+      if (!d.passed && d.x + hw < cb.l) {                // よけ成功
+        d.passed = true;
+        const prev = score; score++;
+        onScoreChange(prev);
+        send('S');                                       // 成功音
+        floaters.push({ x: CAT_X + 8, y: GROUND - cat.y - 74 * cs, life: 0.8, max: 0.8, text: '+1' });
+        if (boss.active) hitBoss();
+      }
+    }
+    dinos = dinos.filter(d => d.x > -90);
+  }
+
+  if (boss.out > 0) { boss.out -= dt; boss.x += 450 * dt; boss.phase += dt * 8; }   // たおされたボスが去っていく
+  if (banners.length) { banners[0].life -= dt; if (banners[0].life <= 0) banners.shift(); }
+  for (const f of floaters) { f.life -= dt; if (!f.ring) f.y -= 40 * dt; }
+  floaters = floaters.filter(f => f.life > 0);
+}
+
+/* ---------- 描画：背景 ---------- */
+function drawBackground() {
+  const nt = nightT;                                  // 0=昼 〜 1=夜
+  const g = ctx.createLinearGradient(0, 0, 0, GROUND);
+  g.addColorStop(0, mixHex('#8fd3ff', '#26408f', nt)); g.addColorStop(1, mixHex('#fff3d6', '#6a80c9', nt));
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+
+  if (nt < 0.99) {                                    // 太陽（夜は消える）
+    ctx.globalAlpha = 1 - nt;
+    const sg = ctx.createRadialGradient(690, 70, 10, 690, 70, 70);
+    sg.addColorStop(0, 'rgba(255,240,150,1)'); sg.addColorStop(1, 'rgba(255,240,150,0)');
+    ctx.fillStyle = sg; circ(690, 70, 70);
+    ctx.fillStyle = '#ffe27a'; circ(690, 70, 32);
+    ctx.globalAlpha = 1;
+  }
+
+  for (const c of clouds) {
+    const x = mod(c.x - scroll * 0.1 * c.s, 1100) - 150, y = c.y, s = c.s;
+    ctx.fillStyle = 'rgba(255,255,255,.92)';
+    circ(x, y, 18 * s); circ(x + 22 * s, y - 10 * s, 22 * s); circ(x + 46 * s, y, 18 * s);
+    ctx.fillRect(x, y - 2 * s, 46 * s, 18 * s);
+  }
+
+  // 遠い丘・近い丘（速度差で奥行き）
+  const hill = (base, amp, k1, k2, spd, ph, color) => {
+    ctx.fillStyle = color; ctx.beginPath(); ctx.moveTo(0, GROUND);
+    for (let x = 0; x <= W; x += 8) {
+      const o = x + scroll * spd;
+      ctx.lineTo(x, base + amp * Math.sin(o / k1 + ph) + amp * 0.45 * Math.sin(o / k2));
+    }
+    ctx.lineTo(W, GROUND); ctx.closePath(); ctx.fill();
+  };
+  hill(205, 22, 110, 43, 0.2, 0, '#b4e8ac');
+  hill(228, 15, 70, 29, 0.4, 1.3, '#86d67f');
+
+  // 草むら・花・木（ひとつ手前の流れ）
+  const base = scroll * 0.7, n = Math.floor(base / 340);
+  for (let k = 0; k < 4; k++) {
+    const id = n + k, bx = id * 340 - base + 60 + (id * 37) % 80;
+    const type = id % 3;
+    if (type === 0) {
+      ctx.fillStyle = '#4fb85a'; circ(bx, GROUND - 8, 14); circ(bx + 16, GROUND - 14, 18); circ(bx + 34, GROUND - 8, 14);
+    } else if (type === 1) {
+      for (let i = 0; i < 4; i++) {
+        const fx = bx + i * 14, fy = GROUND - 14 - (i % 2) * 8;
+        ctx.strokeStyle = '#3fa43a'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(fx, GROUND); ctx.lineTo(fx, fy); ctx.stroke();
+        ctx.fillStyle = ['#ff7aa2', '#ffd447', '#ffffff', '#ff9a52'][i]; circ(fx, fy, 5);
+        ctx.fillStyle = '#ffb300'; circ(fx, fy, 2);
+      }
+    } else {
+      ctx.fillStyle = '#9a6a3a'; ctx.fillRect(bx + 8, GROUND - 36, 8, 36);
+      ctx.fillStyle = '#4fb85a'; circ(bx + 12, GROUND - 46, 22); circ(bx + 0, GROUND - 38, 14); circ(bx + 24, GROUND - 38, 14);
+    }
+  }
+
+  // 地面
+  ctx.fillStyle = '#e0a96d'; ctx.fillRect(0, GROUND, W, H - GROUND);
+  ctx.fillStyle = '#5cc24f'; ctx.fillRect(0, GROUND, W, 12);
+  ctx.fillStyle = '#4aae40'; ctx.fillRect(0, GROUND + 10, W, 3);
+  ctx.fillStyle = '#3fa43a';
+  for (let i = 0; i < 16; i++) {
+    const x = mod(i * 57 - scroll, W + 30) - 15;
+    ctx.beginPath(); ctx.moveTo(x - 4, GROUND); ctx.lineTo(x, GROUND - 7); ctx.lineTo(x + 4, GROUND); ctx.fill();
+  }
+  ctx.fillStyle = '#c98f55';
+  for (let i = 0; i < 14; i++) {
+    const x = mod(i * 83 - scroll, W + 40) - 20, y = GROUND + 26 + (i % 3) * 16;
+    ell(x, y, 8 + (i % 3) * 2, 3);
+  }
+
+  if (nt > 0.01) {                                    // 夜：全体を暗くして、星と月を重ねる
+    ctx.save();
+    ctx.globalCompositeOperation = 'multiply';
+    ctx.fillStyle = mixHex('#ffffff', '#7a88cc', nt); ctx.fillRect(0, 0, W, H);
+    ctx.restore();
+    ctx.save();
+    for (const st of stars) {
+      ctx.globalAlpha = nt * (0.55 + 0.45 * Math.sin(t * 3 + st.ph));
+      ctx.fillStyle = '#fffbe0'; circ(mod(st.x - scroll * 0.03, W), st.y, st.r);
+    }
+    ctx.globalAlpha = nt;
+    const mg = ctx.createRadialGradient(690, 70, 10, 690, 70, 70);
+    mg.addColorStop(0, 'rgba(255,250,200,.55)'); mg.addColorStop(1, 'rgba(255,250,200,0)');
+    ctx.fillStyle = mg; circ(690, 70, 70);
+    ctx.fillStyle = '#fff8d6'; circ(690, 70, 28);
+    ctx.fillStyle = '#eadfae'; circ(680, 62, 5); circ(700, 78, 4); circ(686, 82, 3);
+    ctx.restore();
+  }
+}
+
+/* ---------- 描画：ねこ ---------- */
+function drawCat() {
+  const air = !cat.onGround, over = state === 'over';
+  ctx.save();
+  ctx.translate(CAT_X, GROUND - cat.y);
+
+  const sh = (1 - Math.min(cat.y, 130) / 220) * catScale;          // 影
+  ctx.fillStyle = 'rgba(0,0,0,.18)'; ell(0, cat.y + 2, 24 * sh, 5 * sh);
+  ctx.scale(catScale, catScale);                                    // ミニねこタイムは小さく
+  if (cat.spin > 0) { ctx.translate(0, -26); ctx.rotate(cat.spin * TAU); ctx.translate(0, 26); }   // 2段ジャンプでくるっと回転
+
+  const bob = air ? 0 : Math.abs(Math.sin(cat.phase)) * 2.5;
+  ctx.translate(0, -bob);
+  const ORG = '#ffb34d', ORG_D = '#e0892b', CREAM = '#fff0d2';
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+
+  // しっぽ
+  const tw = air ? -12 : Math.sin(cat.phase * 0.5) * 6;
+  ctx.strokeStyle = ORG_D; ctx.lineWidth = 10;
+  ctx.beginPath(); ctx.moveTo(-20, -20); ctx.quadraticCurveTo(-44, -24 + tw, -38, -50 + tw); ctx.stroke();
+  ctx.strokeStyle = ORG; ctx.lineWidth = 6;
+  ctx.beginPath(); ctx.moveTo(-20, -20); ctx.quadraticCurveTo(-44, -24 + tw, -38, -50 + tw); ctx.stroke();
+
+  // 耳
+  ctx.fillStyle = ORG; ctx.strokeStyle = ORG_D; ctx.lineWidth = 2.5;
+  ctx.beginPath(); ctx.moveTo(-25, -40); ctx.lineTo(-17, -68); ctx.lineTo(-3, -50); ctx.closePath(); ctx.fill(); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(5, -50); ctx.lineTo(19, -68); ctx.lineTo(26, -40); ctx.closePath(); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#ffb0c0';
+  ctx.beginPath(); ctx.moveTo(-20, -48); ctx.lineTo(-16, -60); ctx.lineTo(-9, -51); ctx.closePath(); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(10, -51); ctx.lineTo(18, -60); ctx.lineTo(21, -47); ctx.closePath(); ctx.fill();
+
+  // からだ（あたま一体）
+  ctx.fillStyle = ORG; ctx.strokeStyle = ORG_D; ctx.lineWidth = 2.5;
+  ellS(0, -28, 27, 24);
+  ctx.fillStyle = CAT_BELLY(); ell(3, -17, 15, 11);
+
+  // おでこの模様
+  ctx.strokeStyle = ORG_D; ctx.lineWidth = 3;
+  for (const sx of [-5, 2, 9]) { ctx.beginPath(); ctx.moveTo(sx, -51); ctx.lineTo(sx, -45); ctx.stroke(); }
+
+  // 足
+  ctx.fillStyle = CREAM; ctx.strokeStyle = ORG_D; ctx.lineWidth = 2;
+  if (air) {
+    ellS(-12, -7, 8, 5); ellS(19, -9, 8, 5);
+  } else {
+    const p = cat.phase;
+    ellS(-9 + Math.sin(p) * 9, -5 - Math.max(0, Math.cos(p)) * 6, 8, 5);
+    ellS(11 + Math.sin(p + Math.PI) * 9, -5 - Math.max(0, Math.cos(p + Math.PI)) * 6, 8, 5);
+  }
+
+  // かお
+  if (over) {
+    ctx.strokeStyle = '#2b1d12'; ctx.lineWidth = 2.5;
+    for (const ex of [4, 19]) {
+      ctx.beginPath(); ctx.moveTo(ex - 4, -38); ctx.lineTo(ex + 4, -29); ctx.moveTo(ex + 4, -38); ctx.lineTo(ex - 4, -29); ctx.stroke();
+    }
+  } else if (mod(t, 3.2) < 0.12) {
+    ctx.strokeStyle = '#2b1d12'; ctx.lineWidth = 2.5;
+    for (const ex of [4, 19]) { ctx.beginPath(); ctx.moveTo(ex - 4, -33); ctx.lineTo(ex + 4, -33); ctx.stroke(); }
+  } else {
+    ctx.fillStyle = '#2b1d12'; ell(4, -33, 4.2, 5.6); ell(19, -33, 4.2, 5.6);
+    ctx.fillStyle = '#fff'; circ(5.6, -35, 1.7); circ(20.6, -35, 1.7);
+  }
+  ctx.fillStyle = 'rgba(255,110,140,.55)'; circ(-3, -23, 5); circ(25, -23, 5);
+  ctx.fillStyle = '#ff7a93'; ell(11.5, -27, 2.8, 2);
+  ctx.strokeStyle = '#7a4a2a'; ctx.lineWidth = 1.8;
+  if (air && !over) {
+    ctx.fillStyle = '#b5483f'; ell(11.5, -20, 3.2, 3.8);
+  } else if (!over) {
+    ctx.beginPath(); ctx.arc(8, -25, 3.5, 0.1, Math.PI - 0.1); ctx.stroke();
+    ctx.beginPath(); ctx.arc(15, -25, 3.5, 0.1, Math.PI - 0.1); ctx.stroke();
+  } else {
+    ctx.beginPath(); ctx.arc(11.5, -18, 4, Math.PI + 0.3, TAU - 0.3); ctx.stroke();
+  }
+  ctx.lineWidth = 1.4;
+  for (const [x1, y1, x2, y2] of [[26,-28,38,-31],[26,-24,38,-23],[-4,-28,-15,-31],[-4,-24,-15,-23]]) {
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+  }
+  ctx.restore();
+}
+function CAT_BELLY() { return '#fff0d2'; }
+
+/* ---------- 描画：恐竜 ---------- */
+function drawDino(d) {
+  ctx.save();
+  ctx.translate(d.x, GROUND);
+  ctx.scale(d.s, d.s);
+  ctx.fillStyle = 'rgba(0,0,0,.18)'; ell(0, 2, 36, 5);
+
+  const p = d.phase, bob = Math.abs(Math.sin(p)) * 2;
+  ctx.translate(0, -bob);
+  const pal = d.pal || DINO_PAL;
+  const G = pal.G, GD = pal.GD, BELLY = pal.BELLY, ORG = pal.ORG;
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.lineWidth = 2.5; ctx.strokeStyle = GD;
+
+  // 足
+  ctx.fillStyle = G;
+  ellS(-2 + Math.sin(p) * 6, -7 - Math.max(0, Math.cos(p)) * 7, 10, 7);
+  ellS(18 + Math.sin(p + Math.PI) * 6, -7 - Math.max(0, Math.cos(p + Math.PI)) * 7, 10, 7);
+
+  // しっぽ
+  ctx.beginPath(); ctx.moveTo(22, -38); ctx.quadraticCurveTo(46, -38, 56, -16 + Math.sin(p) * 3);
+  ctx.quadraticCurveTo(38, -20, 24, -16); ctx.closePath(); ctx.fill(); ctx.stroke();
+
+  // 背中のトゲ
+  ctx.fillStyle = ORG; ctx.strokeStyle = pal.ORGD; ctx.lineWidth = 2;
+  for (const sx of [-2, 10, 22]) {
+    ctx.beginPath(); ctx.moveTo(sx - 6, -44); ctx.lineTo(sx, -58); ctx.lineTo(sx + 6, -44); ctx.closePath(); ctx.fill(); ctx.stroke();
+  }
+  ctx.strokeStyle = GD; ctx.lineWidth = 2.5;
+
+  // からだ・おなか
+  ctx.fillStyle = G; ellS(6, -28, 28, 20);
+  ctx.fillStyle = BELLY; ell(0, -22, 17, 12);
+
+  // うで
+  ctx.fillStyle = G; ellS(-13, -25, 6, 3.5, 0.5);
+
+  // あたま（口先→頭の順に重ねる）
+  ctx.fillStyle = G; ellS(-37, -44, 13, 10);
+  ellS(-22, -48, 22, 18);
+  ctx.fillStyle = G; ell(-30, -44, 12, 9);        // 継ぎ目を隠す
+  ctx.fillStyle = GD; circ(-46, -48, 1.6);         // 鼻
+  // 頭のトゲ
+  ctx.fillStyle = ORG; ctx.strokeStyle = pal.ORGD; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(-8, -60); ctx.lineTo(-4, -70); ctx.lineTo(0, -58); ctx.closePath(); ctx.fill(); ctx.stroke();
+
+  // かお
+  ctx.fillStyle = '#fff'; ctx.strokeStyle = GD; ctx.lineWidth = 2; ellS(-22, -53, 6, 6.5);
+  ctx.fillStyle = d.mouth ? '#ff3b30' : '#1d2b20'; circ(-24, -53, 3.2);
+  ctx.fillStyle = '#fff'; circ(-25, -54.5, 1.1);
+  ctx.strokeStyle = pal.LINE; ctx.lineWidth = 2.5;
+  ctx.beginPath(); ctx.moveTo(-30, -62); ctx.lineTo(-16, -58); ctx.stroke();      // きりっとした眉
+  ctx.fillStyle = 'rgba(255,110,130,.5)'; circ(-27, -42, 4.5);
+  ctx.strokeStyle = pal.LINE; ctx.lineWidth = 2;
+  if (d.mouth) {                                   // 口を開けた（攻撃の合図）
+    ctx.fillStyle = '#7a1f2b'; ell(-38, -37, 9, 6);
+    ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.moveTo(-44, -41); ctx.lineTo(-41, -36); ctx.lineTo(-38, -41); ctx.closePath(); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(-37, -41); ctx.lineTo(-34, -36); ctx.lineTo(-31, -41); ctx.closePath(); ctx.fill();
+  } else {
+    ctx.beginPath(); ctx.moveTo(-47, -40); ctx.quadraticCurveTo(-38, -35, -28, -39); ctx.stroke();
+    ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.moveTo(-43, -39); ctx.lineTo(-40, -34); ctx.lineTo(-37, -38); ctx.closePath(); ctx.fill();
+  }
+  ctx.restore();
+}
+
+/* ---------- 描画：ボス ---------- */
+function drawBoss() {
+  if (!boss.active && boss.out <= 0) return;
+  const j = boss.hurt > 0 ? (Math.random() - 0.5) * 8 : 0;
+  if (boss.out > 0) ctx.globalAlpha = 0.55 + 0.45 * Math.sin(t * 30);
+  drawDino({ x: boss.x + j, s: 2.6, phase: boss.phase, pal: BOSS_PAL, mouth: boss.mouth && state === 'playing' });
+  ctx.globalAlpha = 1;
+}
+
+/* ---------- 描画：HUD・パネル ---------- */
+function text(str, x, y, size, color, align = 'center', stroke = '#fff') {
+  ctx.font = `bold ${size}px ${FONT}`; ctx.textAlign = align; ctx.textBaseline = 'middle';
+  ctx.lineWidth = 5; ctx.strokeStyle = stroke; ctx.lineJoin = 'round'; ctx.strokeText(str, x, y);
+  ctx.fillStyle = color; ctx.fillText(str, x, y);
+}
+function drawHUD() {
+  text(`スコア ${score}`, 16, 24, 22, '#4a3b2a', 'left');
+  text(`Lv ${level()}`, W / 2, 24, 22, '#ff8a3d', 'center');
+  text(`ハイスコア ${high}`, W - 16, 24, 22, '#4a3b2a', 'right');
+  if (canDouble()) pill('2段ジャンプ可', 16, 54, '#2f9e44', 'left');
+  if (PRACTICE) pill('練習モード', W - 16, 54, '#7a6f60', 'right');
+  if (boss.active && boss.enter <= 0) drawBossBar();
+}
+function pill(str, x, y, color, align) {
+  ctx.font = `bold 15px ${FONT}`;
+  const w = ctx.measureText(str).width + 22, px = align === 'right' ? x - w : x;
+  ctx.fillStyle = color; rr(px, y - 12, w, 24, 12); ctx.fill();
+  ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(str, px + w / 2, y + 1);
+}
+function drawBossBar() {
+  const w = 260, x = W / 2 - w / 2, y = 48, f = Math.max(0, boss.hp / BOSS_HP);
+  ctx.fillStyle = 'rgba(255,255,255,.85)'; rr(x - 4, y - 4, w + 8, 20, 10); ctx.fill();
+  ctx.fillStyle = '#d9d2e6'; rr(x, y, w, 12, 6); ctx.fill();
+  if (f > 0) { ctx.fillStyle = f > 0.33 ? '#a24ad8' : '#e0483a'; rr(x, y, Math.max(12, w * f), 12, 6); ctx.fill(); }
+  text('ボス', x - 12, y + 7, 16, '#6b2c91', 'right');
+}
+function prompt() {
+  return connected ? 'タクトスイッチを押して' : 'スペースキー／画面タップで';
+}
+function panel(h) {
+  ctx.fillStyle = 'rgba(255,255,255,.88)'; rr(W / 2 - 230, 62, 460, h, 22); ctx.fill();
+  ctx.strokeStyle = '#ffb34d'; ctx.lineWidth = 4; ctx.stroke();
+}
+function drawOverlay() {
+  if (state === 'ready') {
+    panel(PRACTICE ? 198 : 168);
+    text('ねこダッシュ！', W / 2, 108, 42, '#ff8a3d');
+    text('恐竜をジャンプでよけよう', W / 2, 152, 22, '#4a3b2a');
+    if (Math.floor(t * 2) % 2 === 0) text(prompt() + 'スタート', W / 2, 198, 22, '#2f9e44');
+    if (PRACTICE) text(`練習モード：${START_SCORE}点から（ハイスコアは記録されません）`, W / 2, 238, 16, '#7a6f60');
+  } else if (state === 'over') {
+    panel(newHigh ? 190 : 168);
+    text('ゲームオーバー', W / 2, 104, 42, '#e0483a');
+    text(`スコア ${score}　　ハイスコア ${high}`, W / 2, 148, 22, '#4a3b2a');
+    if (PRACTICE) text('練習モード（ハイスコアは記録されません）', W / 2, 176, 15, '#7a6f60');
+    let y = 186;
+    if (newHigh) { text('★ ハイスコア更新！ ★', W / 2, y, 24, '#e6a100'); y += 38; } else y += 4;
+    if (performance.now() - overAt > 700 && Math.floor(t * 2) % 2 === 0)
+      text(prompt() + 'もう一度', W / 2, y + (newHigh ? 0 : 10), 22, '#2f9e44');
+  }
+}
+
+function render() {
+  ctx.save();
+  if (shake > 0) ctx.translate((Math.random() - .5) * 8, (Math.random() - .5) * 8);
+  drawBackground();
+  drawBoss();
+  dinos.forEach(drawDino);
+  drawCat();
+  for (const f of floaters) {
+    if (f.ring) {                                    // 2段ジャンプの輪っか
+      const k = 1 - f.life / f.max;
+      ctx.globalAlpha = 1 - k; ctx.strokeStyle = '#fff'; ctx.lineWidth = 4;
+      ctx.beginPath(); ctx.ellipse(f.x, f.y, 14 + 34 * k, 6 + 10 * k, 0, 0, TAU); ctx.stroke();
+      ctx.globalAlpha = 1;
+      continue;
+    }
+    ctx.globalAlpha = Math.max(0, f.life / (f.max || 0.8));
+    text(f.text || '+1', f.x, f.y, f.size || 26, '#ff8a3d');
+    ctx.globalAlpha = 1;
+  }
+  ctx.restore();
+  drawHUD();
+  const bn = banners[0];
+  if (bn && state === 'playing') {
+    ctx.globalAlpha = Math.min(1, bn.life / 0.4);
+    text(bn.text, W / 2, 96, 30, bn.color);
+    if (bn.sub) text(bn.sub, W / 2, 128, 18, '#4a3b2a');
+    ctx.globalAlpha = 1;
+  }
+  drawOverlay();
+}
+
+/* ---------- メインループ ---------- */
+let last = 0;
+function frame(ts) {
+  const dt = Math.min(0.05, (ts - last) / 1000 || 0);
+  last = ts;
+  update(dt); render();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+/* =====================================================
+   Arduino 連携（Web Serial API）
+   Arduino → PC : 'J'  タクトスイッチが押された
+   PC → Arduino : 'L'  ジャンプ時のLED点滅
+                  'S'  よけ成功の効果音
+                  'G'  ゲームオーバーの効果音とLED
+   ===================================================== */
+let port = null, reader = null, writer = null, connected = false;
+const hasSerial = 'serial' in navigator;
+
+function updateStatus(msg) {
+  statusEl.textContent = msg || (connected
+    ? 'Arduino接続中：タクトスイッチでジャンプ'
+    : 'Arduino未接続：スペースキー／クリック・タップでジャンプ');
+  statusEl.classList.toggle('on', connected);
+  btnConn.textContent = connected ? 'Arduino切断' : 'Arduino接続';
+  btnTest.style.display = connected ? '' : 'none';
+}
+
+function send(ch) {
+  if (!connected || !writer) return;
+  writer.write(new Uint8Array([ch.charCodeAt(0)])).catch(() => {});
+}
+
+async function openPort(p) {
+  await p.open({ baudRate: 115200 });
+  port = p; connected = true;
+  writer = p.writable.getWriter();
+  updateStatus();
+  readLoop(p);
+}
+
+async function readLoop(p) {
+  const rd = p.readable.getReader();
+  reader = rd;
+  try {
+    while (true) {
+      const { value, done } = await rd.read();
+      if (done) break;
+      for (const b of value) if (b === 74) onInput('switch');   // 'J'
+    }
+  } catch (e) { /* 抜けた・切断された */ }
+  finally {
+    try { rd.releaseLock(); } catch (e) {}
+    handleDisconnect(p);
+  }
+}
+
+async function handleDisconnect(p) {
+  if (port !== p) return;
+  connected = false;
+  try { if (writer) writer.releaseLock(); } catch (e) {}
+  writer = null; reader = null;
+  try { await p.close(); } catch (e) {}
+  port = null;
+  updateStatus();
+}
+
+async function closePort() {
+  if (reader) { try { await reader.cancel(); } catch (e) {} }
+}
+
+btnConn.addEventListener('click', async () => {
+  btnConn.blur();
+  if (!hasSerial) return;
+  if (connected) { await closePort(); return; }
+  try {
+    const p = await navigator.serial.requestPort();
+    await openPort(p);
+  } catch (e) {
+    if (e && e.name === 'NotFoundError') return;   // 選択をキャンセル
+    updateStatus('接続できませんでした。Arduino IDEのシリアルモニタなどを閉じて、もう一度お試しください。');
+  }
+});
+
+btnTest.addEventListener('click', () => {          // LED・ブザーの動作確認
+  btnTest.blur();
+  send('L'); setTimeout(() => send('S'), 700); setTimeout(() => send('G'), 1500);
+});
+
+if (!hasSerial) {
+  btnConn.style.display = 'none';
+  updateStatus('このブラウザではArduino接続は使えません（Chrome／Edgeで開いてください）。スペースキー／タップで遊べます。');
+} else {
+  // 前に許可したポートがあれば自動接続
+  navigator.serial.getPorts().then(ports => {
+    if (ports.length) openPort(ports[0]).catch(() => {});
+  }).catch(() => {});
+  navigator.serial.addEventListener('connect', e => {
+    if (!connected) openPort(e.target).catch(() => {});
+  });
+}
+
+// __DEBUG_HOOK__
+})();
+</script>
+</body>
+</html>
