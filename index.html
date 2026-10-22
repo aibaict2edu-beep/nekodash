@@ -31,6 +31,9 @@
     border-radius: 16px; box-shadow: 0 4px 14px rgba(0,0,0,.2); background: #bfe9ff;
     touch-action: manipulation; cursor: pointer; user-select: none; -webkit-user-select: none;
   }
+  .tools { width: 100%; max-width: 900px; display: flex; justify-content: flex-end; margin-top: 8px; }
+  button.small { font-size: 12px; padding: 4px 12px; border-width: 1px; color: #7a6f60; border-color: #c9bfa9; }
+  button.small:hover { background: #7a6f60; border-color: #7a6f60; color: #fff; }
   .help { width: 100%; max-width: 900px; font-size: 14px; line-height: 1.8; margin-top: 12px; }
   .help b { color: var(--accent); }
   .help code { background: #efe6d2; padding: 1px 6px; border-radius: 4px; }
@@ -47,6 +50,7 @@
 </header>
 
 <div class="stage"><canvas id="game" aria-label="ねこダッシュのゲーム画面"></canvas></div>
+<div class="tools"><button id="btnReset" class="small" type="button">ハイスコアをリセット</button></div>
 
 <div class="help">
   <b>あそびかた：</b>走ってくる恐竜をジャンプでよけよう。ぶつかるとゲームオーバー。よけるほど点数が上がり、だんだん速くなります。<br>
@@ -799,6 +803,16 @@ if (!hasSerial) {
     if (!connected) openPort(e.target).catch(() => {});
   });
 }
+
+// ハイスコアのリセット（確認メッセージつき）
+document.getElementById('btnReset').addEventListener('click', e => {
+  e.currentTarget.blur();
+  if (high === 0) { alert('ハイスコアはまだ記録されていません。'); return; }
+  if (confirm(`ハイスコア（${high}点）を0点にリセットします。\nこの操作は元に戻せません。よろしいですか？`)) {
+    high = 0; newHigh = false;
+    try { localStorage.removeItem(KEY_HIGH); } catch (err) {}
+  }
+});
 
 // __DEBUG_HOOK__
 })();
