@@ -61,9 +61,9 @@
   <b>Arduinoとつなぐには：</b>USBで接続し、「Arduino接続」ボタンを押してポートを選んでください（Chrome／Edge）。一度許可すると、次回からは自動でつながります。<br>
   <b>ライフ：</b>ライフ（ハート）は3つ。恐竜などにぶつかると1つ減り、しばらく無敵（ネコが点滅）になります。0になるとゲームオーバーです。<br>
   <b>ステージ：</b>70点からラッシュタイム、100点で夜になってネコが小さくなり2段ジャンプが解禁、140点で朝に戻り、150点でボス恐竜が登場します。<br>
-  <b>ボス戦：</b>ボスは、恐竜・火の玉・衝撃波の壁をランダムに出してきます。攻撃の前に「！」の予告が出ます。<b>火の玉</b>は頭の上をとおるので、ジャンプしないでやりすごします。<b>衝撃波の壁</b>はふつうのジャンプでは越えられないので、2段ジャンプでこえます。<br>
+  <b>ボス戦：</b>ボスは、恐竜・火の玉・衝撃波の壁をランダムに出してきます。攻撃の前に「！」の予告が出ます。<b>火の玉</b>は頭の上をとおるので、ジャンプしないでやりすごします。<b>衝撃波の壁</b>はふつうのジャンプでは越えられないので、2段ジャンプでこえます。1回目のボスをたおすとライフが全回復します。300点で、HPが多く攻撃もはやい<b>強化ボス</b>が登場します（壁が2連続で来ることも！）。<br>
   <b>音：</b>Arduino未接続のときは、パソコンのスピーカーから効果音とBGMが鳴ります（昼・夜・ボス戦で曲が変わります）。画面下の「音：ON/OFF」ボタン、またはMキーで切り替えられます。Arduino接続中は、パソコンの音は鳴らさず、ブザーだけが鳴ります。<br>
-  <b>先生用（練習モード）：</b>URLの末尾に <code>?start=110</code>（その点数から、2段ジャンプ解禁の状態で開始）、<code>?boss=100</code>（ボスが出る点数）、<code>?unlock=70</code>（2段ジャンプを解禁する点数）を付けられます。<code>&amp;</code>でつなげて指定できます。練習モードではハイスコアは記録されません。
+  <b>先生用（練習モード）：</b>URLの末尾に <code>?start=110</code>（その点数から、2段ジャンプ解禁の状態で開始）、<code>?boss=100</code>（1回目のボスが出る点数）、<code>?boss2=250</code>（強化ボスが出る点数）、<code>?unlock=70</code>（2段ジャンプを解禁する点数）を付けられます。<code>&amp;</code>でつなげて指定できます。練習モードではハイスコアは記録されません。
 </div>
 
 <script>
@@ -79,7 +79,8 @@ const KEY_HIGH = 'nekoDash.highScore';
 
 /* ---------- URLパラメータ（先生用の練習モード） ----------
    ?start=110  その点数から、2段ジャンプ解禁の状態で開始
-   ?boss=100   ボスが出る点数（通常は150）
+   ?boss=100   1回目のボスが出る点数（通常は150）
+   ?boss2=250  2回目（強化ボス）が出る点数（通常は300）
    ?unlock=70  2段ジャンプを解禁する点数（通常は100）
    &でつなげられる。どれかを指定すると「練習モード」になり、ハイスコアは記録されない */
 const params = new URLSearchParams(location.search);
@@ -88,16 +89,23 @@ function numParam(k) {
   const v = parseInt(params.get(k), 10);
   return Number.isFinite(v) && v >= 0 ? Math.min(v, 9999) : null;
 }
-const P_START = numParam('start'), P_BOSS = numParam('boss'), P_UNLOCK = numParam('unlock');
-const PRACTICE = P_START !== null || P_BOSS !== null || P_UNLOCK !== null;
+const P_START = numParam('start'), P_BOSS = numParam('boss'), P_BOSS2 = numParam('boss2'), P_UNLOCK = numParam('unlock');
+const PRACTICE = P_START !== null || P_BOSS !== null || P_BOSS2 !== null || P_UNLOCK !== null;
 const START_SCORE = P_START !== null ? P_START : 0;
-const BOSS_AT = P_BOSS !== null ? P_BOSS : 150;
+const BOSS_AT = P_BOSS !== null ? P_BOSS : 150;      // 1回目のボスが出る点数
+const BOSS2_AT = P_BOSS2 !== null ? P_BOSS2 : 300;   // 2回目（強化ボス）が出る点数
 const UNLOCK_AT = P_UNLOCK !== null ? P_UNLOCK : (P_START !== null ? Math.min(100, P_START) : 100);
 const RUSH_FROM = 70, NIGHT_FROM = 100, NIGHT_TO = 140;   // ラッシュ・夜（ミニねこ）の範囲
 const MAX_LIVES = 3, INV_TIME = 1.6;           // ライフの数と、ぶつかったあとの無敵時間（秒）
 const BOSS_HP = 15, BOSS_BONUS = 30, BOSS_X = 800 - 70;   // ボスの位置（画面右がわ）
 const DINO_PAL = { G: '#5bc96c', GD: '#34964a', BELLY: '#dcf7ae', ORG: '#ff9f43', ORGD: '#d97a1a', LINE: '#25693a' };
 const BOSS_PAL = { G: '#b57be0', GD: '#7a3fa8', BELLY: '#f1ddff', ORG: '#ffd447', ORGD: '#d19a00', LINE: '#4b2270' };
+const BOSS2_PAL = { G: '#e8604f', GD: '#9c2a22', BELLY: '#ffdccb', ORG: '#ffd447', ORGD: '#d19a00', LINE: '#5a1410' };
+const HEAL_AFTER_BOSS = [true, false];     // ボスをたおしたときにライフを全回復するか（1回目・2回目）
+const BOSS_DEFS = [
+  { name: 'ボス', hp: BOSS_HP, scale: 2.6, pal: BOSS_PAL, warn: 1, gap: 1, chain: false, bonus: BOSS_BONUS, bar: '#a24ad8', barLow: '#e0483a', label: '#6b2c91' },
+  { name: '強化ボス', hp: 20, scale: 3.0, pal: BOSS2_PAL, warn: 0.72, gap: 0.8, chain: true, bonus: 50, bar: '#e0483a', barLow: '#ffb02e', label: '#b3251c' }   // HP多め・攻撃が速い・壁が2連続
+];
 
 const cv = document.getElementById('game');
 const ctx = cv.getContext('2d');
@@ -142,7 +150,8 @@ let curSpeed = 200;
 let nightT = isNight() ? 1 : 0, catScale = isNight() ? 0.6 : 1;
 const clouds = [{x:80,y:50,s:1},{x:300,y:92,s:.7},{x:520,y:38,s:1.2},{x:720,y:100,s:.8},{x:930,y:60,s:1}];
 
-function newBoss() { return { active: false, done: false, enter: 0, x: W + 320, hp: BOSS_HP, attack: 0, mouth: false, hurt: 0, out: 0, phase: 0, pending: null, last: [] }; }
+function newBoss() { return { no: 0, def: BOSS_DEFS[0], max: BOSS_HP, active: false, done: false, enter: 0, x: W + 320, hp: BOSS_HP, attack: 0, mouth: false, hurt: 0, out: 0, phase: 0, pending: null, last: [], forceNext: null, chainedNow: false }; }
+let bossDone = [false, false], healFlash = 0;   // どのボスをたおしたか / ライフ回復の演出
 function level() { return Math.floor(score / 5) + 1; }
 function canDouble() { return score >= UNLOCK_AT; }                 // 2段ジャンプが使えるか
 function isNight() { return score >= NIGHT_FROM && score < NIGHT_TO; } // 夜＝ミニねこタイム
@@ -178,7 +187,7 @@ function resetGame() {
   cat = { y: 0, vy: 0, onGround: true, phase: 0, jumps: 0, spin: 0, inv: 0 };
   lives = MAX_LIVES; lifeFlash = 0;
   dinos = []; hazards = []; floaters = []; banners = []; spawnTimer = 1.4;
-  rush = { left: 0, cool: 3 }; boss = newBoss();
+  rush = { left: 0, cool: 3 }; boss = newBoss(); bossDone = [false, false]; healFlash = 0;
   nightT = isNight() ? 1 : 0; catScale = isNight() ? 0.6 : 1;
   curSpeed = playSpeed();
   if (canDouble()) { pushBanner('2段ジャンプ解禁！', '#2f9e44', 2.8, true, 'スイッチをもう一度押すと、空中でもう一回ジャンプ！'); sfx('unlock'); }
@@ -245,15 +254,22 @@ function nextGap() {
 }
 
 /* ---------- ボス戦 ---------- */
-function startBoss() {
-  boss.active = true; boss.enter = 1.6; boss.x = W + 320; boss.hp = BOSS_HP;
-  boss.attack = 0; boss.mouth = false;
+function startBoss(no) {                       // no: 0=ボス（1回目） / 1=強化ボス（2回目）
+  const def = BOSS_DEFS[no];
+  boss = newBoss(); boss.no = no; boss.def = def; boss.max = def.hp; boss.hp = def.hp;
+  boss.active = true; boss.enter = 1.6; boss.x = W + 320;
   rush.left = 0; rush.cool = 6;
   shake = 0.5;
   sfx('bossIn');
-  pushBanner('ボス恐竜があらわれた！', '#8e3fb8', 2.4, true, `${BOSS_HP}回よけてたおそう！`);
-  pushBanner('ボスの攻撃に注意！', '#e0483a', 3.4, false,
-    canDouble() ? '火の玉はジャンプしない！　衝撃波の壁は2段ジャンプでこえる！' : '火の玉はジャンプしないでやりすごそう！');
+  if (no === 0) {
+    pushBanner('ボス恐竜があらわれた！', '#8e3fb8', 2.4, true, `${def.hp}回よけてたおそう！`);
+    pushBanner('ボスの攻撃に注意！', '#e0483a', 3.4, false,
+      canDouble() ? '火の玉はジャンプしない！　衝撃波の壁は2段ジャンプでこえる！' : '火の玉はジャンプしないでやりすごそう！');
+  } else {
+    pushBanner('強化ボスがあらわれた！', '#c2261c', 2.4, true, `${def.hp}回よけてたおそう！`);
+    pushBanner('さっきより、ずっと手ごわいぞ！', '#e0483a', 3.4, false,
+      canDouble() ? '攻撃がはやい！　衝撃波が2連続で来ることも！' : '攻撃がはやいぞ！');
+  }
 }
 
 /* ---------- ボスの攻撃（恐竜・火の玉・衝撃波の壁をランダムに） ---------- */
@@ -262,7 +278,7 @@ const FIRE_V = 1.35;                           // 火の玉は地面の流れよ
 
 function bossSpawn() {                         // ボスが小さな恐竜を放つ（HPが減るほど激しく）
   const x0 = BOSS_X - 95, spacing = 100;
-  const f = boss.hp / BOSS_HP, r = Math.random();
+  const f = boss.hp / boss.max, r = Math.random();
   let sizes;
   if (f > 0.66) sizes = [r < 0.3 ? 0.8 : 1];
   else if (f > 0.33) sizes = r < 0.5 ? [1] : r < 0.8 ? [1, 1] : [0.8, 1.25];
@@ -272,11 +288,17 @@ function bossSpawn() {                         // ボスが小さな恐竜を放
 }
 
 function pickAttack() {                        // 次の攻撃をランダムに選ぶ（HPが減るほど火の玉・壁が増える）
-  const f = boss.hp / BOSS_HP;
+  const f = boss.hp / boss.max;
   const w = f > 0.66 ? { dino: 0.5, fire: 0.35, wall: 0.15 }
           : f > 0.33 ? { dino: 0.35, fire: 0.35, wall: 0.30 }
           :            { dino: 0.30, fire: 0.35, wall: 0.35 };
+  if (boss.def.chain) w.dino *= 0.7;           // 強化ボスは、恐竜より火の玉・壁を多めに
   if (!canDouble()) w.wall = 0;                // 2段ジャンプが使えないときは壁を出さない
+  if (boss.forceNext) {                        // 壁の2連続の2つめ
+    const ft = boss.forceNext; boss.forceNext = null; boss.chainedNow = true;
+    boss.last.unshift(ft); boss.last.length = Math.min(boss.last.length, 2);
+    return ft;
+  }
   const last = boss.last;
   if (last.length >= 2 && last[0] === last[1]) w[last[0]] = 0;   // 同じ攻撃を3回続けない
   if (last[0] === 'wall') w.wall = 0;                              // 壁は2回続けない
@@ -288,9 +310,9 @@ function pickAttack() {                        // 次の攻撃をランダムに
 }
 
 function bossGap(type) {                       // 次の攻撃までの間（HPが減るほど短く）
-  const f = boss.hp / BOSS_HP;
+  const f = boss.hp / boss.max;
   const g = f > 0.66 ? 1.5 + Math.random() * 0.6 : f > 0.33 ? 1.15 + Math.random() * 0.5 : 0.95 + Math.random() * 0.4;
-  return g + (type === 'wall' ? 0.35 : 0);
+  return (g + (type === 'wall' ? 0.35 : 0)) * boss.def.gap;
 }
 
 function launchAttack(type) {                  // 予告のあと、実際に攻撃を出す。次の攻撃までの追加の待ち時間を返す
@@ -298,7 +320,7 @@ function launchAttack(type) {                  // 予告のあと、実際に攻
     const h = 86 + Math.random() * 14;         // ボスの口の高さ。ジャンプしなければ頭の上をとおる
     hazards.push({ kind: 'fire', x: BOSS_X - 100, h, age: 0, phase: 0, passed: false });
     sfx('fire');
-    const f = boss.hp / BOSS_HP;
+    const f = boss.hp / boss.max;
     if (Math.random() < (f > 0.66 ? 0.3 : 0.5)) {   // 火の玉のあとに恐竜をつづけて出す（ジャンプのタイミングをずらす罠）
       const v = Math.max(curSpeed, 300);
       const tFire = (BOSS_X - 100 - CAT_X) / (v * FIRE_V);
@@ -330,9 +352,11 @@ function updateBoss(dt) {
     boss.mouth = true;
     boss.pending.left -= dt;
     if (boss.pending.left <= 0) {
-      const type = boss.pending.type;
+      const type = boss.pending.type, dbl = boss.pending.dbl;
       boss.pending = null;
-      boss.attack = bossGap(type) + launchAttack(type);
+      const extra = launchAttack(type);
+      boss.attack = dbl ? 1.0 : bossGap(type) + extra;       // 壁が2連続のときは、1つめのあと1秒で次の予告
+      if (dbl) boss.forceNext = 'wall';
     }
     return;
   }
@@ -340,8 +364,13 @@ function updateBoss(dt) {
   boss.mouth = boss.attack < 0.45;             // 口を開けたら攻撃の合図
   if (boss.attack <= 0) {
     const type = pickAttack();
+    const second = boss.chainedNow; boss.chainedNow = false;
     if (type === 'dino') boss.attack = bossGap(type) + bossSpawn();
-    else { boss.pending = { type, left: type === 'wall' ? 0.85 : 0.6 }; sfx('warn'); }
+    else {
+      const dbl = type === 'wall' && !second && boss.def.chain && Math.random() < (boss.hp / boss.max > 0.66 ? 0.3 : 0.5);   // 強化ボスは壁を2連続で出すことがある
+      boss.pending = { type, left: (type === 'wall' ? 0.85 : 0.6) * boss.def.warn, dbl, second };
+      sfx('warn');
+    }
   }
 }
 
@@ -359,9 +388,15 @@ function hitBoss() {                           // 恐竜を1匹よけるたび�
 
 function defeatBoss() {
   boss.active = false; boss.done = true; boss.out = 1.8; boss.mouth = false;
+  bossDone[boss.no] = true;
   dinos.length = 0; hazards.length = 0; boss.pending = null;   // 恐竜も火の玉も壁も、いっせいに消える
-  const prev = score; score += BOSS_BONUS; onScoreChange(prev);
-  pushBanner('ボスをたおした！', '#e6a100', 2.2, true, `ボーナス +${BOSS_BONUS}点`);
+  const bonus = boss.def.bonus, prev = score; score += bonus; onScoreChange(prev);
+  pushBanner(boss.no === 0 ? 'ボスをたおした！' : '強化ボスをたおした！', '#e6a100', 2.2, true, `ボーナス +${bonus}点`);
+  if (HEAL_AFTER_BOSS[boss.no] && lives < MAX_LIVES) {         // ライフ全回復
+    lives = MAX_LIVES; healFlash = 1.3; cat.inv = Math.max(cat.inv, 0);
+    pushBanner('ライフ全回復！', '#e0245e', 2.2, false);
+    sfx('heal');
+  }
   spawnTimer = 2.0; rush.left = 0; rush.cool = 8;
   send('S'); sfx('bossWin');
 }
@@ -417,7 +452,10 @@ function update(dt) {
       if (cat.y <= 0) { cat.y = 0; cat.vy = 0; cat.onGround = true; cat.jumps = 0; cat.spin = 0; }
     } else cat.phase += dt * 14;
 
-    if (!boss.active && !boss.done && score >= BOSS_AT) startBoss();
+    if (!boss.active && boss.out <= 0) {
+      const next = !bossDone[0] && score >= BOSS_AT ? 0 : (!bossDone[1] && score >= BOSS2_AT ? 1 : -1);
+      if (next >= 0) startBoss(next);
+    }
 
     if (boss.active) {
       updateBoss(dt);
@@ -472,6 +510,7 @@ function update(dt) {
 
   if (boss.out > 0) { boss.out -= dt; boss.x += 450 * dt; boss.phase += dt * 8; }   // たおされたボスが去っていく
   if (lifeFlash > 0) lifeFlash -= dt;
+  if (healFlash > 0) healFlash -= dt;
   if (banners.length) { banners[0].life -= dt; if (banners[0].life <= 0) banners.shift(); }
   for (const f of floaters) { f.life -= dt; if (!f.ring) f.y -= 40 * dt; }
   floaters = floaters.filter(f => f.life > 0);
@@ -721,7 +760,13 @@ function drawBoss() {
   if (!boss.active && boss.out <= 0) return;
   const j = boss.hurt > 0 ? (Math.random() - 0.5) * 8 : 0;
   if (boss.out > 0) ctx.globalAlpha = 0.55 + 0.45 * Math.sin(t * 30);
-  drawDino({ x: boss.x + j, s: 2.6, phase: boss.phase, pal: BOSS_PAL, mouth: boss.mouth && state === 'playing' });
+  if (boss.no === 1) {                                           // 強化ボスは、赤いオーラをまとう
+    const a = 0.22 + 0.08 * Math.sin(t * 6), gx = boss.x + j - 30, gy = GROUND - 100;
+    const g = ctx.createRadialGradient(gx, gy, 20, gx, gy, 190);
+    g.addColorStop(0, `rgba(255,70,40,${a})`); g.addColorStop(1, 'rgba(255,70,40,0)');
+    ctx.fillStyle = g; ctx.fillRect(gx - 200, gy - 200, 400, 400);
+  }
+  drawDino({ x: boss.x + j, s: boss.def.scale, phase: boss.phase, pal: boss.def.pal, mouth: boss.mouth && state === 'playing' });
   ctx.globalAlpha = 1;
 }
 
@@ -768,7 +813,8 @@ function drawWarn() {                          // ボスの口もとに出る「
   ctx.strokeStyle = '#fff'; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(0, 0, 17, 0, TAU); ctx.stroke();
   ctx.restore();
   text('！', x, y + 1, 24, '#fff', 'center', 'rgba(0,0,0,0)');
-  text(wall ? '衝撃波！' : '火の玉！', x, y + 30, 16, wall ? '#b3167f' : '#d9480f');
+  const lab = wall ? (boss.pending.dbl ? '衝撃波×2！' : boss.pending.second ? '2つめ！' : '衝撃波！') : '火の玉！';
+  text(lab, x, y + 30, 16, wall ? '#b3167f' : '#d9480f');
 }
 
 /* ---------- 描画：HUD・パネル ---------- */
@@ -798,6 +844,7 @@ function drawLives() {
     let r = 12;
     if (alive && lives === 1 && state === 'playing') r += Math.sin(t * 9) * 1.3;        // 最後の1つは、どきどきと脈うつ
     if (!alive && i === lives && lifeFlash > 0) r += lifeFlash * 10;                     // 減った瞬間のハートがふくらむ
+    if (alive && healFlash > 0) r += 3 + 3 * Math.sin(healFlash * 18);                    // ライフ全回復：ハートがはずむ
     heartPath(x, y, r);
     ctx.lineJoin = 'round'; ctx.lineWidth = 5; ctx.strokeStyle = '#fff'; ctx.stroke();
     if (alive) {
@@ -817,11 +864,11 @@ function pill(str, x, y, color, align) {
   ctx.fillText(str, px + w / 2, y + 1);
 }
 function drawBossBar() {
-  const w = 260, x = W / 2 - w / 2, y = 48, f = Math.max(0, boss.hp / BOSS_HP);
+  const w = 260, x = W / 2 - w / 2, y = 48, f = Math.max(0, boss.hp / boss.max);
   ctx.fillStyle = 'rgba(255,255,255,.85)'; rr(x - 4, y - 4, w + 8, 20, 10); ctx.fill();
   ctx.fillStyle = '#d9d2e6'; rr(x, y, w, 12, 6); ctx.fill();
-  if (f > 0) { ctx.fillStyle = f > 0.33 ? '#a24ad8' : '#e0483a'; rr(x, y, Math.max(12, w * f), 12, 6); ctx.fill(); }
-  text('ボス', x - 12, y + 7, 16, '#6b2c91', 'right');
+  if (f > 0) { ctx.fillStyle = f > 0.33 ? boss.def.bar : boss.def.barLow; rr(x, y, Math.max(12, w * f), 12, 6); ctx.fill(); }
+  text(boss.def.name, x - 12, y + 7, 16, boss.def.label, 'right');
 }
 function prompt() {
   return connected ? 'タクトスイッチを押して' : 'スペースキー／画面タップで';
@@ -951,6 +998,7 @@ const SFX = {
     tone(60, n + 1.0, 0.35, 'sawtooth', 0.2, 35);
   },
   hit()     { const n = actx.currentTime; tone(330, n, 0.3, 'sawtooth', 0.18, 105); tone(660, n, 0.12, 'square', 0.08, 220); },   // ぶつかった（ライフが減る）
+  heal()    { seq([[659, 0.08], [784, 0.08], [988, 0.08], [1319, 0.3]], 'triangle', 0.22); },   // ライフ全回復
   warn()    { seq([[1250, 0.07], [0, 0.05], [1250, 0.07]], 'square', 0.1); },                       // 予告の「ピピッ」
   fire()    { const n = actx.currentTime; tone(1100, n, 0.45, 'sawtooth', 0.1, 260); tone(700, n, 0.4, 'square', 0.05, 200); },
   wall()    { const n = actx.currentTime; tone(130, n, 0.5, 'sawtooth', 0.22, 45); tone(260, n, 0.25, 'square', 0.08, 90); },
@@ -987,7 +1035,7 @@ function bgmTick() {                           // 50msごとに、ほんの少�
   if (want !== bgm.name) { bgm.name = want; bgm.step = 0; bgm.next = actx.currentTime + 0.05; }
   if (!want) return;
   const tr = TRACKS[want];
-  const fast = want === 'boss' ? 1 : 1 + Math.min(0.25, score / 400);   // 点数が上がるとテンポも少し上がる
+  const fast = want === 'boss' ? (boss.no === 1 ? 1.12 : 1) : 1 + Math.min(0.25, score / 400);   // 強化ボスの曲は少し速い   // 点数が上がるとテンポも少し上がる
   const stepDur = 60 / tr.bpm / 2 / fast;
   while (bgm.next < actx.currentTime + 0.25) {
     const i = bgm.step % tr.mel.length;
