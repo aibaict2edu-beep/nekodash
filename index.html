@@ -303,10 +303,13 @@ function bossSpawn() {                         // ボスが小さな恐竜を放
 
 function pickAttack() {                        // 次の攻撃をランダムに選ぶ（HPが減るほど火の玉・壁が増える）
   const f = boss.hp / boss.max;
-  const w = f > 0.66 ? { dino: 0.5, fire: 0.35, wall: 0.15 }
-          : f > 0.33 ? { dino: 0.35, fire: 0.35, wall: 0.30 }
-          :            { dino: 0.30, fire: 0.35, wall: 0.35 };
-  if (boss.def.chain) w.dino *= 0.7;           // 強化ボスは、恐竜より火の玉・壁を多めに
+  let w = f > 0.66 ? { dino: 0.5, fire: 0.35, wall: 0.15 }
+        : f > 0.33 ? { dino: 0.35, fire: 0.35, wall: 0.30 }
+        :            { dino: 0.30, fire: 0.35, wall: 0.35 };
+  if (boss.def.chain)                          // 強化ボスは、壁が半分以上（HPが減るほど壁が増える）
+    w = f > 0.66 ? { dino: 0.25, fire: 0.25, wall: 0.50 }
+      : f > 0.33 ? { dino: 0.20, fire: 0.25, wall: 0.55 }
+      :            { dino: 0.15, fire: 0.25, wall: 0.60 };
   if (!canDouble()) w.wall = 0;                // 2段ジャンプが使えないときは壁を出さない
   if (boss.forceNext) {                        // 壁の2連続の2つめ
     const ft = boss.forceNext; boss.forceNext = null; boss.chainedNow = true;
@@ -315,7 +318,7 @@ function pickAttack() {                        // 次の攻撃をランダムに
   }
   const last = boss.last;
   if (last.length >= 2 && last[0] === last[1]) w[last[0]] = 0;   // 同じ攻撃を3回続けない
-  if (last[0] === 'wall') w.wall = 0;                              // 壁は2回続けない
+  if (last[0] === 'wall' && !boss.def.chain) w.wall = 0;           // 壁は2回続けない（強化ボスは壁が続いてもよい）
   const total = w.dino + w.fire + w.wall;
   let r = Math.random() * total;
   const type = (r -= w.dino) < 0 ? 'dino' : (r -= w.fire) < 0 ? 'fire' : 'wall';
@@ -382,7 +385,7 @@ function updateBoss(dt) {
     const second = boss.chainedNow; boss.chainedNow = false;
     if (type === 'dino') boss.attack = bossGap(type) + bossSpawn();
     else {
-      const dbl = type === 'wall' && !second && boss.def.chain && Math.random() < (boss.hp / boss.max > 0.66 ? 0.3 : 0.5);   // 強化ボスは壁を2連続で出すことがある
+      const dbl = type === 'wall' && !second && boss.def.chain && Math.random() < (boss.hp / boss.max > 0.66 ? 0.45 : 0.65);   // 強化ボスは壁を2連続で出すことが多い
       boss.pending = { type, left: (type === 'wall' ? 0.85 : 0.6) * boss.def.warn, dbl, second };
       sfx('warn');
     }
