@@ -59,6 +59,7 @@
   <b>あそびかた：</b>走ってくる恐竜をジャンプでよけよう。ぶつかるとゲームオーバー。よけるほど点数が上がり、だんだん速くなります。<br>
   <b>操作：</b>Arduino接続中はタクトスイッチでジャンプ。未接続のときはスペースキー・画面のクリック／タップでジャンプします。スタートとリスタートはどちらでもできます。<br>
   <b>Arduinoとつなぐには：</b>USBで接続し、「Arduino接続」ボタンを押してポートを選んでください（Chrome／Edge）。一度許可すると、次回からは自動でつながります。<br>
+  <b>ライフ：</b>ライフ（ハート）は3つ。恐竜などにぶつかると1つ減り、しばらく無敵（ネコが点滅）になります。0になるとゲームオーバーです。<br>
   <b>ステージ：</b>70点からラッシュタイム、100点で夜になってネコが小さくなり2段ジャンプが解禁、140点で朝に戻り、150点でボス恐竜が登場します。<br>
   <b>ボス戦：</b>ボスは、恐竜・火の玉・衝撃波の壁をランダムに出してきます。攻撃の前に「！」の予告が出ます。<b>火の玉</b>は頭の上をとおるので、ジャンプしないでやりすごします。<b>衝撃波の壁</b>はふつうのジャンプでは越えられないので、2段ジャンプでこえます。<br>
   <b>音：</b>Arduino未接続のときは、パソコンのスピーカーから効果音とBGMが鳴ります（昼・夜・ボス戦で曲が変わります）。画面下の「音：ON/OFF」ボタン、またはMキーで切り替えられます。Arduino接続中は、パソコンの音は鳴らさず、ブザーだけが鳴ります。<br>
@@ -93,6 +94,7 @@ const START_SCORE = P_START !== null ? P_START : 0;
 const BOSS_AT = P_BOSS !== null ? P_BOSS : 150;
 const UNLOCK_AT = P_UNLOCK !== null ? P_UNLOCK : (P_START !== null ? Math.min(100, P_START) : 100);
 const RUSH_FROM = 70, NIGHT_FROM = 100, NIGHT_TO = 140;   // ラッシュ・夜（ミニねこ）の範囲
+const MAX_LIVES = 3, INV_TIME = 1.6;           // ライフの数と、ぶつかったあとの無敵時間（秒）
 const BOSS_HP = 15, BOSS_BONUS = 30, BOSS_X = 800 - 70;   // ボスの位置（画面右がわ）
 const DINO_PAL = { G: '#5bc96c', GD: '#34964a', BELLY: '#dcf7ae', ORG: '#ff9f43', ORGD: '#d97a1a', LINE: '#25693a' };
 const BOSS_PAL = { G: '#b57be0', GD: '#7a3fa8', BELLY: '#f1ddff', ORG: '#ffd447', ORGD: '#d19a00', LINE: '#4b2270' };
@@ -131,7 +133,8 @@ function saveHigh(v) { try { localStorage.setItem(KEY_HIGH, String(v)); } catch 
 let state = 'ready';               // ready | playing | over
 let score = START_SCORE, high = loadHigh(), newHigh = false;
 let scroll = 0, t = 0, shake = 0, overAt = 0;
-let cat = { y: 0, vy: 0, onGround: true, phase: 0, jumps: 0, spin: 0 };   // y = 地面からの高さ
+let lives = MAX_LIVES, lifeFlash = 0;
+let cat = { y: 0, vy: 0, onGround: true, phase: 0, jumps: 0, spin: 0, inv: 0 };   // y = 地面からの高さ / inv = 無敵の残り時間
 let dinos = [], hazards = [], spawnTimer = 0, floaters = [], banners = [];   // hazards = 火の玉・衝撃波の壁
 let rush = { left: 0, cool: 3 };
 let boss = newBoss();
@@ -172,7 +175,8 @@ function onScoreChange(prev) {                 // 点数が変わったときの
 
 function resetGame() {
   score = START_SCORE; newHigh = false; shake = 0;
-  cat = { y: 0, vy: 0, onGround: true, phase: 0, jumps: 0, spin: 0 };
+  cat = { y: 0, vy: 0, onGround: true, phase: 0, jumps: 0, spin: 0, inv: 0 };
+  lives = MAX_LIVES; lifeFlash = 0;
   dinos = []; hazards = []; floaters = []; banners = []; spawnTimer = 1.4;
   rush = { left: 0, cool: 3 }; boss = newBoss();
   nightT = isNight() ? 1 : 0; catScale = isNight() ? 0.6 : 1;
@@ -192,6 +196,14 @@ function jump() {
     floaters.push({ ring: true, x: CAT_X, y: GROUND - cat.y - 14 * catScale, life: 0.4, max: 0.4 });
     send('L'); sfx('double');
   }
+}
+
+function takeHit() {                           // ぶつかった：ライフを1つ減らす。0になったらゲームオーバー（trueを返す）
+  lives--; lifeFlash = 0.7;
+  if (lives <= 0) { lives = 0; gameOver(); return true; }
+  cat.inv = INV_TIME; shake = 0.3;             // しばらく無敵（ネコが点滅）
+  send('H'); sfx('hit');                       // Arduino：ぶつかった音＋LED
+  return false;
 }
 
 function gameOver() {
@@ -399,6 +411,7 @@ function update(dt) {
 
   if (state === 'playing') {
     if (cat.spin > 0) { cat.spin += dt / 0.45; if (cat.spin >= 1) cat.spin = 0; }
+    if (cat.inv > 0) cat.inv -= dt;
     if (!cat.onGround) {
       cat.vy -= GRAVITY * dt; cat.y += cat.vy * dt;
       if (cat.y <= 0) { cat.y = 0; cat.vy = 0; cat.onGround = true; cat.jumps = 0; cat.spin = 0; }
@@ -434,8 +447,11 @@ function update(dt) {
       d.x -= sp * dt; d.phase += dt * 12;
       const hw = 26 * d.s, hh = 52 * d.s;
       const db = { l: d.x - hw, r: d.x + hw, t: GROUND - hh, b: GROUND - 2 };
-      if (cb.r > db.l && cb.l < db.r && cb.b > db.t && cb.t < db.b) { gameOver(); break; }
-      if (!d.passed && d.x + hw < cb.l) { d.passed = true; scorePass(cs); }   // よけ成功
+      if (cb.r > db.l && cb.l < db.r && cb.b > db.t && cb.t < db.b) {
+        if (!d.ghost && cat.inv <= 0) { d.ghost = true; if (takeHit()) break; }   // ぶつかった恐竜は、よけた数に入らない
+        d.ghost = true;                                                           // 無敵のあいだにすり抜けた恐竜も同じ
+      }
+      if (!d.passed && !d.ghost && d.x + hw < cb.l) { d.passed = true; scorePass(cs); }   // よけ成功
     }
     dinos = dinos.filter(d => d.x > -90);
 
@@ -444,14 +460,18 @@ function update(dt) {
         hz.age += dt; hz.phase += dt * 12;
         hz.x -= sp * (hz.kind === 'fire' ? FIRE_V : 1) * dt;
         const hb = hazBox(hz);
-        if (cb.r > hb.l && cb.l < hb.r && cb.b > hb.t && cb.t < hb.b) { gameOver(); break; }
-        if (!hz.passed && hz.x + (hb.r - hb.l) / 2 < cb.l) { hz.passed = true; scorePass(cs); }
+        if (cb.r > hb.l && cb.l < hb.r && cb.b > hb.t && cb.t < hb.b) {
+          if (!hz.ghost && cat.inv <= 0) { hz.ghost = true; if (takeHit()) break; }
+          hz.ghost = true;
+        }
+        if (!hz.passed && !hz.ghost && hz.x + (hb.r - hb.l) / 2 < cb.l) { hz.passed = true; scorePass(cs); }
       }
       hazards = hazards.filter(h => h.x > -60);
     }
   }
 
   if (boss.out > 0) { boss.out -= dt; boss.x += 450 * dt; boss.phase += dt * 8; }   // たおされたボスが去っていく
+  if (lifeFlash > 0) lifeFlash -= dt;
   if (banners.length) { banners[0].life -= dt; if (banners[0].life <= 0) banners.shift(); }
   for (const f of floaters) { f.life -= dt; if (!f.ring) f.y -= 40 * dt; }
   floaters = floaters.filter(f => f.life > 0);
@@ -549,8 +569,9 @@ function drawBackground() {
 
 /* ---------- 描画：ねこ ---------- */
 function drawCat() {
-  const air = !cat.onGround, over = state === 'over';
+  const air = !cat.onGround, over = state === 'over' || cat.inv > INV_TIME - 0.4;
   ctx.save();
+  if (cat.inv > 0 && state === 'playing' && Math.floor(t * 14) % 2 === 0) ctx.globalAlpha = 0.35;   // 無敵中は点滅
   ctx.translate(CAT_X, GROUND - cat.y);
 
   const sh = (1 - Math.min(cat.y, 130) / 220) * catScale;          // 影
@@ -760,9 +781,33 @@ function drawHUD() {
   text(`スコア ${score}`, 16, 24, 22, '#4a3b2a', 'left');
   text(`Lv ${level()}`, W / 2, 24, 22, '#ff8a3d', 'center');
   text(`ハイスコア ${high}`, W - 16, 24, 22, '#4a3b2a', 'right');
-  if (canDouble()) pill('2段ジャンプ可', 16, 54, '#2f9e44', 'left');
+  drawLives();
+  if (canDouble()) pill('2段ジャンプ可', 16, 86, '#2f9e44', 'left');
   if (PRACTICE) pill('練習モード', W - 16, 54, '#7a6f60', 'right');
   if (boss.active && boss.enter <= 0) drawBossBar();
+}
+function heartPath(x, y, r) {
+  ctx.beginPath(); ctx.moveTo(x, y + r * 0.95);
+  ctx.bezierCurveTo(x - r * 1.35, y + r * 0.1, x - r * 0.95, y - r * 0.95, x, y - r * 0.38);
+  ctx.bezierCurveTo(x + r * 0.95, y - r * 0.95, x + r * 1.35, y + r * 0.1, x, y + r * 0.95);
+  ctx.closePath();
+}
+function drawLives() {
+  for (let i = 0; i < MAX_LIVES; i++) {
+    const x = 30 + i * 32, y = 56, alive = i < lives;
+    let r = 12;
+    if (alive && lives === 1 && state === 'playing') r += Math.sin(t * 9) * 1.3;        // 最後の1つは、どきどきと脈うつ
+    if (!alive && i === lives && lifeFlash > 0) r += lifeFlash * 10;                     // 減った瞬間のハートがふくらむ
+    heartPath(x, y, r);
+    ctx.lineJoin = 'round'; ctx.lineWidth = 5; ctx.strokeStyle = '#fff'; ctx.stroke();
+    if (alive) {
+      ctx.fillStyle = lives === 1 ? '#ff3b30' : '#ff4d6d'; ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,.55)'; ell(x - r * 0.45, y - r * 0.35, r * 0.22, r * 0.14, -0.6);
+    } else {
+      ctx.fillStyle = lifeFlash > 0 && i === lives ? 'rgba(255,77,109,' + Math.min(1, lifeFlash / 0.35) + ')' : '#cfc9d6';
+      ctx.fill();
+    }
+  }
 }
 function pill(str, x, y, color, align) {
   ctx.font = `bold 15px ${FONT}`;
@@ -905,6 +950,7 @@ const SFX = {
     tone(95, n, 1.2, 'sawtooth', 0.22, 38); tone(98, n, 1.2, 'square', 0.12, 40);
     tone(60, n + 1.0, 0.35, 'sawtooth', 0.2, 35);
   },
+  hit()     { const n = actx.currentTime; tone(330, n, 0.3, 'sawtooth', 0.18, 105); tone(660, n, 0.12, 'square', 0.08, 220); },   // ぶつかった（ライフが減る）
   warn()    { seq([[1250, 0.07], [0, 0.05], [1250, 0.07]], 'square', 0.1); },                       // 予告の「ピピッ」
   fire()    { const n = actx.currentTime; tone(1100, n, 0.45, 'sawtooth', 0.1, 260); tone(700, n, 0.4, 'square', 0.05, 200); },
   wall()    { const n = actx.currentTime; tone(130, n, 0.5, 'sawtooth', 0.22, 45); tone(260, n, 0.25, 'square', 0.08, 90); },
